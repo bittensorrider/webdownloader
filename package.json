@@ -7,7 +7,7 @@
     "web-downloader": "./web-downloader"
   },
   "scripts": {
-    "test": "node web-downloader --help"
+    "test": "node test/helpers.test.js && node web-downloader --help"
   },
   "keywords": [
     "web",

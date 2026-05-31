@@ -18,6 +18,11 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
+const { version: PACKAGE_VERSION } = require('./package.json');
+
+const MAX_REDIRECTS = 10;
+const SKIP_URL_PREFIXES = ['data:', 'javascript:', 'mailto:', '#'];
+
 const TEXT_EXTENSIONS = new Set([
   '.css', '.htm', '.html', '.js', '.json', '.md', '.mjs', '.svg', '.txt', '.xml'
 ]);
@@ -64,6 +69,116 @@ function isTextResource(url, contentType) {
 
   const ext = path.extname(new URL(url).pathname).toLowerCase();
   return TEXT_EXTENSIONS.has(ext);
+}
+
+function shouldSkipUrl(url) {
+  const trimmed = url.trim();
+  return !trimmed || SKIP_URL_PREFIXES.some(prefix => trimmed.startsWith(prefix));
+}
+
+function parseSrcset(value) {
+  return value
+    .split(',')
+    .map(entry => entry.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function addAssetReference(references, seen, original, baseUrl, origin) {
+  if (shouldSkipUrl(original)) {
+    return;
+  }
+
+  try {
+    const fullUrl = new URL(original, baseUrl).href;
+    if (!fullUrl.startsWith(origin) || seen.has(fullUrl)) {
+      return;
+    }
+
+    seen.add(fullUrl);
+    references.push({ original, fullUrl });
+  } catch (e) {
+    // Invalid URL, skip
+  }
+}
+
+function extractHtmlAssets(html, baseUrl) {
+  const references = [];
+  const seen = new Set();
+  const origin = baseUrl.origin;
+
+  const attributeRegex = /\b(?:href|src|data-src|poster|content)\s*=\s*["']([^"']+)["']/gi;
+  let match;
+
+  while ((match = attributeRegex.exec(html)) !== null) {
+    addAssetReference(references, seen, match[1], baseUrl, origin);
+  }
+
+  const srcsetRegex = /\bsrcset\s*=\s*["']([^"']+)["']/gi;
+  while ((match = srcsetRegex.exec(html)) !== null) {
+    for (const candidate of parseSrcset(match[1])) {
+      addAssetReference(references, seen, candidate, baseUrl, origin);
+    }
+  }
+
+  const inlineStyleRegex = /style\s*=\s*"([^"]*)"/gi;
+  while ((match = inlineStyleRegex.exec(html)) !== null) {
+    for (const cssRef of extractCssReferences(match[1])) {
+      addAssetReference(references, seen, cssRef.original, baseUrl, origin);
+    }
+  }
+
+  const inlineStyleSingleQuoteRegex = /style\s*=\s*'([^']*)'/gi;
+  while ((match = inlineStyleSingleQuoteRegex.exec(html)) !== null) {
+    for (const cssRef of extractCssReferences(match[1])) {
+      addAssetReference(references, seen, cssRef.original, baseUrl, origin);
+    }
+  }
+
+  const styleTagRegex = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  while ((match = styleTagRegex.exec(html)) !== null) {
+    for (const cssRef of extractCssReferences(match[1])) {
+      addAssetReference(references, seen, cssRef.original, baseUrl, origin);
+    }
+  }
+
+  return references;
+}
+
+function extractCssReferences(css) {
+  const references = [];
+  const seen = new Set();
+
+  const pushReference = (original) => {
+    const trimmed = original.trim();
+    if (!trimmed || seen.has(trimmed) || shouldSkipUrl(trimmed)) {
+      return;
+    }
+
+    seen.add(trimmed);
+    references.push({ original: trimmed });
+  };
+
+  const urlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+  let match;
+
+  while ((match = urlRegex.exec(css)) !== null) {
+    pushReference(match[2]);
+  }
+
+  const importRegex = /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(['"])([^'"]+)\3)/gi;
+  while ((match = importRegex.exec(css)) !== null) {
+    pushReference(match[2] || match[4]);
+  }
+
+  return references;
+}
+
+function isCssResource(url, contentType) {
+  if (contentType && contentType.split(';')[0].trim().toLowerCase() === 'text/css') {
+    return true;
+  }
+
+  return path.extname(new URL(url).pathname).toLowerCase() === '.css';
 }
 
 class RobotsTxtParser {
@@ -188,6 +303,8 @@ class WebDownloader {
       ...options
     };
     this.downloaded = new Set();
+    this.savedAssets = new Map();
+    this.failures = 0;
     this.queue = [];
     this.robotsParsers = new Map(); // Cache robots.txt per domain
     this.lastCrawlTime = new Map(); // Track last crawl time per domain for crawl-delay
@@ -258,6 +375,10 @@ class WebDownloader {
     try {
       const parsedUrl = new URL(url);
 
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(`Unsupported URL scheme: ${parsedUrl.protocol}`);
+      }
+
       if (this.downloaded.has(url) || depth > this.options.maxDepth) {
         return;
       }
@@ -275,6 +396,7 @@ class WebDownloader {
 
       if (!html) {
         console.error(`Failed to download: ${url}`);
+        this.failures += 1;
         return;
       }
 
@@ -313,12 +435,21 @@ class WebDownloader {
 
     } catch (error) {
       console.error(`Error downloading ${url}:`, error.message);
+      this.failures += 1;
     }
   }
 
   fetchResponse(url, redirectCount = 0) {
     return new Promise((resolve, reject) => {
+      if (redirectCount > MAX_REDIRECTS) {
+        return reject(new Error(`Too many redirects (${MAX_REDIRECTS})`));
+      }
+
       const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return reject(new Error(`Unsupported URL scheme: ${parsedUrl.protocol}`));
+      }
+
       const protocol = parsedUrl.protocol === 'https:' ? https : http;
 
       const options = {
@@ -365,57 +496,98 @@ class WebDownloader {
     return {
       body,
       content: isText ? body.toString('utf8') : body,
-      isText
+      isText,
+      contentType
     };
   }
 
-  async downloadAssets(html, baseUrl, pageLocalPath) {
-    const assetRegex = /(href|src)=["']([^"']+)["']/g;
-    let match;
-    const assets = [];
-    const seenAssets = new Set();
+  async ensureAssetDownloaded(fullUrl, origin, referrerLocalPath) {
+    if (this.savedAssets.has(fullUrl)) {
+      return this.savedAssets.get(fullUrl);
+    }
 
-    while ((match = assetRegex.exec(html)) !== null) {
-      const assetUrl = match[2];
-      if (!assetUrl.startsWith('data:') && !assetUrl.startsWith('javascript:')) {
-        try {
-          const fullUrl = new URL(assetUrl, baseUrl).href;
-          if (fullUrl.startsWith(baseUrl.origin) && !seenAssets.has(fullUrl)) {
-            seenAssets.add(fullUrl);
-            assets.push({ original: assetUrl, full: fullUrl });
-          }
-        } catch (e) {
-          // Invalid URL, skip
+    const assetLocalPath = this.getFilename(new URL(fullUrl));
+    this.savedAssets.set(fullUrl, assetLocalPath);
+
+    try {
+      const { content, isText, contentType } = await this.fetchResource(fullUrl);
+      const filepath = path.join(this.options.outputDir, assetLocalPath);
+      const dir = path.dirname(filepath);
+
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      let fileContent = content;
+
+      if (isText && isCssResource(fullUrl, contentType)) {
+        fileContent = await this.rewriteCssAssets(content, new URL(fullUrl), assetLocalPath, origin);
+      }
+
+      if (isText) {
+        fs.writeFileSync(filepath, fileContent, 'utf8');
+      } else {
+        fs.writeFileSync(filepath, fileContent);
+      }
+
+      console.log(`Downloaded asset: ${assetLocalPath}`);
+      return assetLocalPath;
+    } catch (error) {
+      this.savedAssets.delete(fullUrl);
+      throw error;
+    }
+  }
+
+  async rewriteCssAssets(css, cssBaseUrl, cssLocalPath, origin) {
+    const references = extractCssReferences(css);
+
+    for (const reference of references) {
+      try {
+        const nestedFullUrl = new URL(reference.original, cssBaseUrl).href;
+        if (!nestedFullUrl.startsWith(origin)) {
+          continue;
         }
+
+        const nestedLocalPath = await this.ensureAssetDownloaded(
+          nestedFullUrl,
+          origin,
+          cssLocalPath
+        );
+        const relativePath = getRelativePath(cssLocalPath, nestedLocalPath);
+
+        css = css.replace(
+          new RegExp(escapeRegex(reference.original), 'g'),
+          relativePath
+        );
+      } catch (error) {
+        console.error(`Failed to download CSS asset: ${reference.original}`, error.message);
+        this.failures += 1;
       }
     }
 
+    return css;
+  }
+
+  async downloadAssets(html, baseUrl, pageLocalPath) {
+    const assets = extractHtmlAssets(html, baseUrl);
+    const origin = baseUrl.origin;
+
     for (const asset of assets) {
       try {
-        const { content, isText } = await this.fetchResource(asset.full);
-        const assetLocalPath = this.getFilename(new URL(asset.full));
-        const filepath = path.join(this.options.outputDir, assetLocalPath);
+        const assetLocalPath = await this.ensureAssetDownloaded(
+          asset.fullUrl,
+          origin,
+          pageLocalPath
+        );
         const relativePath = getRelativePath(pageLocalPath, assetLocalPath);
-
-        const dir = path.dirname(filepath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-
-        if (isText) {
-          fs.writeFileSync(filepath, content, 'utf8');
-        } else {
-          fs.writeFileSync(filepath, content);
-        }
-
-        console.log(`Downloaded asset: ${assetLocalPath}`);
 
         html = html.replace(
           new RegExp(escapeRegex(asset.original), 'g'),
           relativePath
         );
-      } catch (e) {
-        console.error(`Failed to download asset: ${asset.full}`, e.message);
+      } catch (error) {
+        console.error(`Failed to download asset: ${asset.fullUrl}`, error.message);
+        this.failures += 1;
       }
     }
 
@@ -502,6 +674,17 @@ class WebDownloader {
 }
 
 // CLI Interface
+function nextArg(args, index, flag) {
+  const value = args[index + 1];
+
+  if (!value || value.startsWith('-')) {
+    console.error(`Error: ${flag} requires a value`);
+    process.exit(1);
+  }
+
+  return value;
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
@@ -520,26 +703,53 @@ function parseArgs() {
     if (arg === '-h' || arg === '--help') {
       printHelp();
       process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      console.log(PACKAGE_VERSION);
+      process.exit(0);
     } else if (arg === '-o' || arg === '--output') {
-      options.outputDir = args[++i];
+      options.outputDir = nextArg(args, i, arg);
+      i += 1;
     } else if (arg === '--no-assets') {
       options.includeAssets = false;
     } else if (arg === '-f' || arg === '--follow-links') {
       options.followLinks = true;
     } else if (arg === '-d' || arg === '--depth') {
-      options.maxDepth = parseInt(args[++i], 10);
+      const depthValue = nextArg(args, i, arg);
+      const maxDepth = parseInt(depthValue, 10);
+
+      if (Number.isNaN(maxDepth) || maxDepth < 0) {
+        console.error(`Error: Invalid depth value: ${depthValue}`);
+        process.exit(1);
+      }
+
+      options.maxDepth = maxDepth;
+      i += 1;
     } else if (arg === '-m' || arg === '--markdown') {
       options.markdown = true;
     } else if (arg === '-r' || arg === '--robots') {
-      const robotsOption = args[++i];
+      const robotsOption = nextArg(args, i, arg);
       if (['obey', 'ignore', 'warn'].includes(robotsOption)) {
         options.robotsTxt = robotsOption;
       } else {
         console.error(`Invalid robots.txt option: ${robotsOption}. Use: obey, ignore, or warn`);
         process.exit(1);
       }
-    } else if (!arg.startsWith('-')) {
-      options.urls.push(arg);
+      i += 1;
+    } else if (arg.startsWith('-')) {
+      console.error(`Error: Unknown option: ${arg}`);
+      printHelp();
+      process.exit(1);
+    } else {
+      try {
+        const parsed = new URL(arg);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          throw new Error('unsupported protocol');
+        }
+        options.urls.push(parsed.href);
+      } catch (error) {
+        console.error(`Error: Invalid URL: ${arg}`);
+        process.exit(1);
+      }
     }
   }
 
@@ -555,6 +765,7 @@ USAGE:
 
 OPTIONS:
   -h, --help              Show this help message
+  -v, --version           Show version number
   -o, --output <dir>      Output directory (default: ./downloaded-site)
   --no-assets             Don't download CSS, JS, images, etc.
   -f, --follow-links      Follow and download linked pages
@@ -610,7 +821,14 @@ async function main() {
       await downloader.download(url);
     } catch (error) {
       console.error(`Failed to download ${url}:`, error.message);
+      downloader.failures += 1;
     }
+  }
+
+  if (downloader.failures > 0) {
+    console.error(`\nCompleted with ${downloader.failures} error(s).`);
+    console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+    process.exit(1);
   }
 
   console.log('\n✓ Download complete!');
@@ -622,3 +840,8 @@ if (require.main === module) {
 }
 
 module.exports = WebDownloader;
+module.exports.getRelativePath = getRelativePath;
+module.exports.parseSrcset = parseSrcset;
+module.exports.extractHtmlAssets = extractHtmlAssets;
+module.exports.extractCssReferences = extractCssReferences;
+module.exports.isTextResource = isTextResource;
