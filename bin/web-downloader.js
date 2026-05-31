@@ -36,9 +36,12 @@ function parseArgs() {
     maxDepth: 1,
     maxPages: 0,
     concurrency: 5,
+    timeout: 30000,
+    userAgent: 'WebDownloader/1.0',
     markdown: false,
     robotsTxt: 'ignore',
     allowPrivateUrls: false,
+    sameOriginOnly: true,
     logLevel: 'info'
   };
 
@@ -75,6 +78,12 @@ function parseArgs() {
     } else if (arg === '-c' || arg === '--concurrency') {
       options.concurrency = parsePositiveInt(nextArg(args, i, arg), arg);
       i += 1;
+    } else if (arg === '--timeout') {
+      options.timeout = parsePositiveInt(nextArg(args, i, arg), arg);
+      i += 1;
+    } else if (arg === '--user-agent') {
+      options.userAgent = nextArg(args, i, arg);
+      i += 1;
     } else if (arg === '-m' || arg === '--markdown') {
       options.markdown = true;
     } else if (arg === '-r' || arg === '--robots') {
@@ -88,6 +97,8 @@ function parseArgs() {
       i += 1;
     } else if (arg === '--allow-private-urls') {
       options.allowPrivateUrls = true;
+    } else if (arg === '--allow-external-assets') {
+      options.sameOriginOnly = false;
     } else if (arg === '-q' || arg === '--quiet') {
       options.logLevel = 'quiet';
     } else if (arg === '--verbose') {
@@ -121,29 +132,46 @@ USAGE:
   web-downloader [OPTIONS] <URL>...
 
 OPTIONS:
-  -h, --help              Show this help message
-  -v, --version           Show version number
-  -o, --output <dir>      Output directory (default: ./downloaded-site)
-  --no-assets             Don't download CSS, JS, images, etc.
-  -f, --follow-links      Follow and download linked pages
-  -d, --depth <n>         Maximum depth for following links (default: 1)
-  --max-pages <n>         Maximum number of pages to download (default: unlimited)
-  -c, --concurrency <n>   Parallel downloads (default: 5)
-  -m, --markdown          Convert HTML to Markdown
-  -r, --robots <mode>     How to handle robots.txt (default: ignore)
-                          ignore - Completely ignore robots.txt
-                          obey   - Respect robots.txt rules (skip blocked URLs)
-                          warn   - Show warnings but download anyway
-  --allow-private-urls    Allow localhost and private network URLs
-  -q, --quiet             Suppress non-error output
-  --verbose               Show detailed progress output
+  -h, --help                Show this help message
+  -v, --version             Show version number
+  -o, --output <dir>        Output directory (default: ./downloaded-site)
+  --no-assets               Don't download CSS, JS, images, etc.
+  -f, --follow-links        Follow and download linked pages
+  -d, --depth <n>           Maximum depth for following links (default: 1)
+  --max-pages <n>           Maximum number of pages to download (default: unlimited)
+  -c, --concurrency <n>     Parallel downloads (default: 5)
+  --timeout <ms>            Request timeout in milliseconds (default: 30000)
+  --user-agent <name>       Custom User-Agent header
+  -m, --markdown            Convert HTML to Markdown
+  -r, --robots <mode>       How to handle robots.txt (default: ignore)
+                            ignore - Completely ignore robots.txt
+                            obey   - Respect robots.txt rules (skip blocked URLs)
+                            warn   - Show warnings but download anyway
+  --allow-private-urls      Allow localhost and private network URLs
+  --allow-external-assets   Download CDN and third-party assets
+  -q, --quiet               Suppress non-error output
+  --verbose                 Show detailed progress output
 
 EXAMPLES:
   web-downloader https://example.com
+  web-downloader --allow-external-assets https://example.com
   web-downloader -c 8 -f -d 2 https://example.com
-  web-downloader --max-pages 10 -f https://example.com
-  web-downloader --allow-private-urls http://127.0.0.1:8080
+  web-downloader --timeout 60000 --user-agent "MyBot/1.0" https://example.com
 `);
+}
+
+function printSummary(downloader, outputDir, failed = false) {
+  const stats = downloader.getStats();
+  const destination = path.resolve(outputDir);
+
+  if (failed) {
+    console.error(`\nCompleted with ${stats.failures} error(s).`);
+  } else {
+    console.log('\nDownload complete!');
+  }
+
+  console.log(`Summary: ${stats.pages} page(s), ${stats.assets} asset(s), ${stats.failures} error(s)`);
+  console.log(`Files saved to: ${destination}`);
 }
 
 async function main() {
@@ -172,17 +200,12 @@ async function main() {
     }
   }
 
-  if (downloader.failures > 0) {
-    if (options.logLevel !== 'quiet') {
-      console.error(`\nCompleted with ${downloader.failures} error(s).`);
-      console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
-    }
-    process.exit(1);
+  if (options.logLevel !== 'quiet') {
+    printSummary(downloader, options.outputDir, downloader.failures > 0);
   }
 
-  if (options.logLevel !== 'quiet') {
-    console.log('\nDownload complete!');
-    console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+  if (downloader.failures > 0) {
+    process.exit(1);
   }
 }
 
@@ -196,5 +219,6 @@ if (require.main === module) {
 module.exports = {
   parseArgs,
   printHelp,
+  printSummary,
   main
 };

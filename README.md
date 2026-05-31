@@ -22,6 +22,8 @@ A terminal tool for archiving complete web pages (HTML, CSS, JavaScript, images,
 - Blocks private-network URLs by default (SSRF protection)
 - Parallel asset and page downloads with configurable concurrency
 - Page crawl safety limit via `--max-pages`
+- CDN asset downloads via `--allow-external-assets`
+- Download summary with page, asset, and error counts
 - Programmatic API for use as a Node.js module
 
 ## Install
@@ -47,12 +49,15 @@ web-downloader https://example.com
   -d, --depth <n>         Maximum link-follow depth (default: 1)
   --max-pages <n>         Maximum number of pages to download
   -c, --concurrency <n>   Parallel downloads (default: 5)
+  --timeout <ms>          Request timeout in milliseconds
+  --user-agent <name>     Custom User-Agent header
   -m, --markdown          Convert HTML to Markdown
   -r, --robots <mode>     How to handle robots.txt (default: ignore)
                           ignore - skip robots.txt entirely
                           obey   - respect rules, skip blocked URLs
                           warn   - warn but proceed
   --allow-private-urls    Allow localhost and private network URLs
+  --allow-external-assets Download CDN and third-party assets
   -q, --quiet             Suppress non-error output
   --verbose               Show detailed progress output
 ```
@@ -71,6 +76,9 @@ web-downloader -f -d 2 -c 8 -o ./my-site https://example.com
 
 # Cap crawl size
 web-downloader --max-pages 20 -f https://example.com
+
+# Download CDN assets (stored under _external/)
+web-downloader --allow-external-assets https://example.com
 
 # Download a local dev server
 web-downloader --allow-private-urls http://127.0.0.1:8080
@@ -93,13 +101,17 @@ async function run() {
     maxPages: 20,
     concurrency: 8,
     logLevel: 'info',
+    sameOriginOnly: true,
     markdown: false,
     robotsTxt: 'obey',
+    timeout: 30000,
+    userAgent: 'WebDownloader/1.1',
     maxResponseBytes: 50 * 1024 * 1024,
     allowPrivateUrls: false
   });
 
   await downloader.download('https://example.com');
+  console.log(downloader.getStats());
 
   if (downloader.failures > 0) {
     process.exitCode = 1;
@@ -141,3 +153,5 @@ Run tests locally:
 ```bash
 npm test
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.

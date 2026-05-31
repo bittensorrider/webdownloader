@@ -1,6 +1,6 @@
 {
   "name": "web-downloader-cli",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A terminal tool for downloading complete web pages with all assets for offline viewing",
   "main": "lib/index.js",
   "bin": {

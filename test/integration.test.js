@@ -148,6 +148,61 @@ async function run() {
     }
   });
 
+  await test('downloads external CDN assets when sameOriginOnly is disabled', async () => {
+    const cdnServer = http.createServer((req, res) => {
+      if (req.url === '/app.js') {
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end('console.log("cdn");');
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not found');
+    });
+
+    await new Promise((resolve) => cdnServer.listen(0, '127.0.0.1', resolve));
+    const cdnBaseUrl = `http://127.0.0.1:${cdnServer.address().port}`;
+
+    const siteServer = http.createServer((req, res) => {
+      if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><body><script src="${cdnBaseUrl}/app.js"></script></body></html>`);
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not found');
+    });
+
+    await new Promise((resolve) => siteServer.listen(0, '127.0.0.1', resolve));
+    const siteBaseUrl = `http://127.0.0.1:${siteServer.address().port}`;
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-downloader-'));
+
+    try {
+      const downloader = new WebDownloader({
+        outputDir,
+        allowPrivateUrls: true,
+        sameOriginOnly: false,
+        logLevel: 'quiet'
+      });
+
+      await downloader.download(`${siteBaseUrl}/`);
+
+      const stats = downloader.getStats();
+      assert.strictEqual(stats.pages, 1);
+      assert.ok(stats.assets >= 1);
+      assert.strictEqual(stats.failures, 0);
+
+      const html = fs.readFileSync(path.join(outputDir, 'index.html'), 'utf8');
+      assert.match(html, /_external\/127\.0\.0\.1\/app\.js/);
+      assert.ok(fs.existsSync(path.join(outputDir, '_external/127.0.0.1/app.js')));
+    } finally {
+      siteServer.close();
+      cdnServer.close();
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
   console.log('All integration tests passed.');
 }
 

@@ -7,7 +7,8 @@ const {
   extractCssReferences,
   isPrivateAddress,
   decompressBody,
-  mapPool
+  mapPool,
+  getAssetStoragePath
 } = require('../lib/index');
 const { convertToMarkdown } = require('../lib/markdown');
 
@@ -95,6 +96,34 @@ async function run() {
 
     assert.deepStrictEqual(results, [2, 4, 6, 8]);
     assert.deepStrictEqual(order.sort((a, b) => a - b), [1, 2, 3, 4]);
+  });
+
+  await test('getAssetStoragePath stores external assets under _external', () => {
+    const pageOrigin = 'https://example.com';
+    const external = 'https://cdn.example.com/lib/app.js';
+
+    assert.strictEqual(
+      getAssetStoragePath('https://example.com/css/site.css', pageOrigin, true),
+      'css/site.css'
+    );
+    assert.strictEqual(
+      getAssetStoragePath(external, pageOrigin, false),
+      '_external/cdn.example.com/lib/app.js'
+    );
+  });
+
+  await test('extractHtmlAssets can include CDN assets when enabled', () => {
+    const baseUrl = new URL('https://example.com/');
+    const html = `
+      <script src="https://cdn.example.com/app.js"></script>
+      <img src="/local.png">
+    `;
+
+    const sameOriginAssets = extractHtmlAssets(html, baseUrl, { sameOriginOnly: true });
+    const externalAssets = extractHtmlAssets(html, baseUrl, { sameOriginOnly: false });
+
+    assert.ok(!sameOriginAssets.some(asset => asset.fullUrl.includes('cdn.example.com')));
+    assert.ok(externalAssets.some(asset => asset.fullUrl === 'https://cdn.example.com/app.js'));
   });
 
   await test('convertToMarkdown handles lists and code blocks', () => {
