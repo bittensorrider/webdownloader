@@ -15,6 +15,17 @@ function nextArg(args, index, flag) {
   return value;
 }
 
+function parsePositiveInt(value, flag) {
+  const parsed = parseInt(value, 10);
+
+  if (Number.isNaN(parsed) || parsed < 1) {
+    console.error(`Error: ${flag} requires a positive integer`);
+    process.exit(1);
+  }
+
+  return parsed;
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
@@ -23,9 +34,12 @@ function parseArgs() {
     includeAssets: true,
     followLinks: false,
     maxDepth: 1,
+    maxPages: 0,
+    concurrency: 5,
     markdown: false,
     robotsTxt: 'ignore',
-    allowPrivateUrls: false
+    allowPrivateUrls: false,
+    logLevel: 'info'
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -55,6 +69,12 @@ function parseArgs() {
 
       options.maxDepth = maxDepth;
       i += 1;
+    } else if (arg === '--max-pages') {
+      options.maxPages = parsePositiveInt(nextArg(args, i, arg), arg);
+      i += 1;
+    } else if (arg === '-c' || arg === '--concurrency') {
+      options.concurrency = parsePositiveInt(nextArg(args, i, arg), arg);
+      i += 1;
     } else if (arg === '-m' || arg === '--markdown') {
       options.markdown = true;
     } else if (arg === '-r' || arg === '--robots') {
@@ -68,6 +88,10 @@ function parseArgs() {
       i += 1;
     } else if (arg === '--allow-private-urls') {
       options.allowPrivateUrls = true;
+    } else if (arg === '-q' || arg === '--quiet') {
+      options.logLevel = 'quiet';
+    } else if (arg === '--verbose') {
+      options.logLevel = 'verbose';
     } else if (arg.startsWith('-')) {
       console.error(`Error: Unknown option: ${arg}`);
       printHelp();
@@ -103,17 +127,21 @@ OPTIONS:
   --no-assets             Don't download CSS, JS, images, etc.
   -f, --follow-links      Follow and download linked pages
   -d, --depth <n>         Maximum depth for following links (default: 1)
+  --max-pages <n>         Maximum number of pages to download (default: unlimited)
+  -c, --concurrency <n>   Parallel downloads (default: 5)
   -m, --markdown          Convert HTML to Markdown
   -r, --robots <mode>     How to handle robots.txt (default: ignore)
                           ignore - Completely ignore robots.txt
                           obey   - Respect robots.txt rules (skip blocked URLs)
                           warn   - Show warnings but download anyway
   --allow-private-urls    Allow localhost and private network URLs
+  -q, --quiet             Suppress non-error output
+  --verbose               Show detailed progress output
 
 EXAMPLES:
   web-downloader https://example.com
-  web-downloader -m https://example.com/article
-  web-downloader -f -d 2 -o ./my-site https://example.com
+  web-downloader -c 8 -f -d 2 https://example.com
+  web-downloader --max-pages 10 -f https://example.com
   web-downloader --allow-private-urls http://127.0.0.1:8080
 `);
 }
@@ -127,29 +155,35 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('Web Page Downloader');
-  console.log('===================\n');
+  if (options.logLevel !== 'quiet') {
+    console.log('Web Page Downloader');
+    console.log('===================\n');
+  }
 
   const downloader = new WebDownloader(options);
 
   for (const url of options.urls) {
     try {
-      console.log(`\nStarting download: ${url}`);
+      downloader.log.info(`\nStarting download: ${url}`);
       await downloader.download(url);
     } catch (error) {
-      console.error(`Failed to download ${url}:`, error.message);
+      downloader.log.error(`Failed to download ${url}:`, error.message);
       downloader.failures += 1;
     }
   }
 
   if (downloader.failures > 0) {
-    console.error(`\nCompleted with ${downloader.failures} error(s).`);
-    console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+    if (options.logLevel !== 'quiet') {
+      console.error(`\nCompleted with ${downloader.failures} error(s).`);
+      console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+    }
     process.exit(1);
   }
 
-  console.log('\nDownload complete!');
-  console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+  if (options.logLevel !== 'quiet') {
+    console.log('\nDownload complete!');
+    console.log(`Files saved to: ${path.resolve(options.outputDir)}`);
+  }
 }
 
 if (require.main === module) {

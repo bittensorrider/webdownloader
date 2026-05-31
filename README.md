@@ -20,6 +20,8 @@ A terminal tool for archiving complete web pages (HTML, CSS, JavaScript, images,
 - Follows redirects automatically with loop protection
 - Respects `crawl-delay` directives
 - Blocks private-network URLs by default (SSRF protection)
+- Parallel asset and page downloads with configurable concurrency
+- Page crawl safety limit via `--max-pages`
 - Programmatic API for use as a Node.js module
 
 ## Install
@@ -43,12 +45,16 @@ web-downloader https://example.com
   --no-assets             Skip CSS, JS, images, and other assets
   -f, --follow-links      Follow and download linked pages
   -d, --depth <n>         Maximum link-follow depth (default: 1)
+  --max-pages <n>         Maximum number of pages to download
+  -c, --concurrency <n>   Parallel downloads (default: 5)
   -m, --markdown          Convert HTML to Markdown
   -r, --robots <mode>     How to handle robots.txt (default: ignore)
                           ignore - skip robots.txt entirely
                           obey   - respect rules, skip blocked URLs
                           warn   - warn but proceed
   --allow-private-urls    Allow localhost and private network URLs
+  -q, --quiet             Suppress non-error output
+  --verbose               Show detailed progress output
 ```
 
 ### Examples
@@ -60,8 +66,11 @@ web-downloader https://example.com
 # Convert to Markdown
 web-downloader -m https://example.com/article
 
-# Follow linked pages, depth 2, custom output
-web-downloader -f -d 2 -o ./my-site https://example.com
+# Follow linked pages, depth 2, 8 parallel downloads
+web-downloader -f -d 2 -c 8 -o ./my-site https://example.com
+
+# Cap crawl size
+web-downloader --max-pages 20 -f https://example.com
 
 # Download a local dev server
 web-downloader --allow-private-urls http://127.0.0.1:8080
@@ -81,6 +90,9 @@ async function run() {
     includeAssets: true,
     followLinks: true,
     maxDepth: 2,
+    maxPages: 20,
+    concurrency: 8,
+    logLevel: 'info',
     markdown: false,
     robotsTxt: 'obey',
     maxResponseBytes: 50 * 1024 * 1024,
@@ -102,7 +114,7 @@ run().catch(console.error);
 ```
 bin/web-downloader.js   CLI entry point
 lib/                    Core library modules
-test/                   Unit tests
+test/                   Unit and integration tests
 web-downloader          Backward-compatible CLI shim
 ```
 
