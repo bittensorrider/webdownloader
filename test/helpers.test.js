@@ -1,11 +1,13 @@
 const assert = require('assert');
-const { URL } = require('url');
+const zlib = require('zlib');
 const {
   getRelativePath,
   parseSrcset,
   extractHtmlAssets,
-  extractCssReferences
-} = require('../web-downloader');
+  extractCssReferences,
+  isPrivateAddress,
+  decompressBody
+} = require('../lib/index');
 
 function test(name, fn) {
   try {
@@ -62,6 +64,21 @@ test('extractCssReferences finds url and import references', () => {
   const references = extractCssReferences(css).map(ref => ref.original);
 
   assert.deepStrictEqual(references, ['/css/base.css', '../images/bg.png']);
+});
+
+test('isPrivateAddress detects common private ranges', () => {
+  assert.strictEqual(isPrivateAddress('127.0.0.1'), true);
+  assert.strictEqual(isPrivateAddress('10.0.0.5'), true);
+  assert.strictEqual(isPrivateAddress('192.168.1.20'), true);
+  assert.strictEqual(isPrivateAddress('93.184.216.34'), false);
+});
+
+test('decompressBody handles gzip responses', () => {
+  const original = Buffer.from('hello offline world');
+  const compressed = zlib.gzipSync(original);
+  const decompressed = decompressBody(compressed, 'gzip');
+
+  assert.strictEqual(decompressed.toString('utf8'), 'hello offline world');
 });
 
 console.log('All helper tests passed.');

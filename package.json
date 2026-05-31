@@ -2,12 +2,12 @@
   "name": "web-downloader-cli",
   "version": "1.0.0",
   "description": "A terminal tool for downloading complete web pages with all assets for offline viewing",
-  "main": "web-downloader",
+  "main": "lib/index.js",
   "bin": {
-    "web-downloader": "./web-downloader"
+    "web-downloader": "./bin/web-downloader.js"
   },
   "scripts": {
-    "test": "node test/helpers.test.js && node web-downloader --help"
+    "test": "node test/helpers.test.js && node bin/web-downloader.js --help"
   },
   "keywords": [
     "web",
@@ -31,10 +31,13 @@
   "bugs": {
     "url": "https://github.com/aza-ali/webdownloader/issues"
   },
+  "homepage": "https://github.com/aza-ali/webdownloader#readme",
   "engines": {
-    "node": ">=12.0.0"
+    "node": ">=18.0.0"
   },
   "files": [
+    "bin",
+    "lib",
     "web-downloader"
   ]
 }
