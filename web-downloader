@@ -18,6 +18,54 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
+const TEXT_EXTENSIONS = new Set([
+  '.css', '.htm', '.html', '.js', '.json', '.md', '.mjs', '.svg', '.txt', '.xml'
+]);
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function toPosixPath(filepath) {
+  return filepath.split(path.sep).join('/');
+}
+
+function getRelativePath(fromFile, toFile) {
+  const fromDir = path.posix.dirname(toPosixPath(fromFile));
+  const target = toPosixPath(toFile);
+  const relative = path.posix.relative(fromDir, target);
+
+  if (!relative || relative === '.') {
+    return path.posix.basename(target);
+  }
+
+  return relative;
+}
+
+function isTextContentType(contentType) {
+  if (!contentType) {
+    return false;
+  }
+
+  const type = contentType.split(';')[0].trim().toLowerCase();
+
+  return type.startsWith('text/') ||
+    type === 'application/javascript' ||
+    type === 'application/x-javascript' ||
+    type === 'application/json' ||
+    type === 'application/xml' ||
+    type === 'image/svg+xml';
+}
+
+function isTextResource(url, contentType) {
+  if (isTextContentType(contentType)) {
+    return true;
+  }
+
+  const ext = path.extname(new URL(url).pathname).toLowerCase();
+  return TEXT_EXTENSIONS.has(ext);
+}
+
 class RobotsTxtParser {
   constructor(robotsTxt, userAgent = '*') {
     this.userAgent = userAgent;
@@ -243,7 +291,7 @@ class WebDownloader {
       let processedHtml = html;
 
       if (this.options.includeAssets) {
-        processedHtml = await this.downloadAssets(html, parsedUrl);
+        processedHtml = await this.downloadAssets(html, parsedUrl, filename);
       }
 
       if (this.options.markdown) {
@@ -268,7 +316,7 @@ class WebDownloader {
     }
   }
 
-  fetchPage(url) {
+  fetchResponse(url, redirectCount = 0) {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(url);
       const protocol = parsedUrl.protocol === 'https:' ? https : http;
@@ -283,35 +331,57 @@ class WebDownloader {
       };
 
       protocol.get(url, options, (response) => {
-        // Handle redirects
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           const redirectUrl = new URL(response.headers.location, url).href;
           console.log(`Redirecting to: ${redirectUrl}`);
-          return resolve(this.fetchPage(redirectUrl));
+          return resolve(this.fetchResponse(redirectUrl, redirectCount + 1));
         }
 
         if (response.statusCode !== 200) {
           return reject(new Error(`HTTP ${response.statusCode}`));
         }
 
-        let data = '';
-        response.on('data', chunk => data += chunk);
-        response.on('end', () => resolve(data));
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => {
+          resolve({
+            body: Buffer.concat(chunks),
+            contentType: response.headers['content-type'] || ''
+          });
+        });
       }).on('error', reject);
     });
   }
 
-  async downloadAssets(html, baseUrl) {
+  async fetchPage(url) {
+    const { body } = await this.fetchResponse(url);
+    return body.toString('utf8');
+  }
+
+  async fetchResource(url) {
+    const { body, contentType } = await this.fetchResponse(url);
+    const isText = isTextResource(url, contentType);
+
+    return {
+      body,
+      content: isText ? body.toString('utf8') : body,
+      isText
+    };
+  }
+
+  async downloadAssets(html, baseUrl, pageLocalPath) {
     const assetRegex = /(href|src)=["']([^"']+)["']/g;
     let match;
     const assets = [];
+    const seenAssets = new Set();
 
     while ((match = assetRegex.exec(html)) !== null) {
       const assetUrl = match[2];
       if (!assetUrl.startsWith('data:') && !assetUrl.startsWith('javascript:')) {
         try {
           const fullUrl = new URL(assetUrl, baseUrl).href;
-          if (fullUrl.startsWith(baseUrl.origin)) {
+          if (fullUrl.startsWith(baseUrl.origin) && !seenAssets.has(fullUrl)) {
+            seenAssets.add(fullUrl);
             assets.push({ original: assetUrl, full: fullUrl });
           }
         } catch (e) {
@@ -320,23 +390,30 @@ class WebDownloader {
       }
     }
 
-    // Download each asset
     for (const asset of assets) {
       try {
-        const content = await this.fetchPage(asset.full);
-        const filename = this.getFilename(new URL(asset.full));
-        const filepath = path.join(this.options.outputDir, filename);
+        const { content, isText } = await this.fetchResource(asset.full);
+        const assetLocalPath = this.getFilename(new URL(asset.full));
+        const filepath = path.join(this.options.outputDir, assetLocalPath);
+        const relativePath = getRelativePath(pageLocalPath, assetLocalPath);
 
         const dir = path.dirname(filepath);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
 
-        fs.writeFileSync(filepath, content);
-        console.log(`Downloaded asset: ${filename}`);
+        if (isText) {
+          fs.writeFileSync(filepath, content, 'utf8');
+        } else {
+          fs.writeFileSync(filepath, content);
+        }
 
-        // Update HTML to reference local file
-        html = html.replace(asset.original, filename);
+        console.log(`Downloaded asset: ${assetLocalPath}`);
+
+        html = html.replace(
+          new RegExp(escapeRegex(asset.original), 'g'),
+          relativePath
+        );
       } catch (e) {
         console.error(`Failed to download asset: ${asset.full}`, e.message);
       }
